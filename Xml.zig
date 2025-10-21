@@ -21,8 +21,13 @@ pub const Token = struct {
         /// Possible next tags:
         /// * `attr_key`
         /// * `attr_value`
+        /// * `pi_close`
+        pi_open,
+        /// Emitted by on the end of a pi block
+        /// Possible next tags:
         /// * `tag_open`
-        doctype,
+        /// * `content`
+        pi_close,
         /// Example: "<head>"
         /// Possible next tags:
         /// * `attr_key`
@@ -50,7 +55,7 @@ pub const Token = struct {
         /// Exactly the bytes of the string, including the quotes. Does no decoding.
         /// Possible next tags:
         /// * `attr_key`
-        /// * `tag_open`
+        /// * `pi_close`
         /// * `tag_close`
         /// * `content`
         attr_value,
@@ -58,6 +63,7 @@ pub const Token = struct {
         /// Possible next tags:
         /// * `tag_open`
         /// * `tag_close`
+        /// * `pi_open`
         content,
         /// End of file was reached.
         eof,
@@ -75,69 +81,80 @@ pub fn next(xml: *Xml) Token {
         switch (xml.state) {
             .start => switch (byte) {
                 ' ', '\t', '\r', '\n' => {},
-                '<' => xml.state = .doctype_q,
+                '<' => xml.state = .pi_q,
                 else => return xml.fail(.invalid_byte),
             },
-            .doctype_q => switch (byte) {
+            .pi_q => switch (byte) {
                 ' ', '\t', '\r', '\n' => {},
-                '?' => xml.state = .doctype_name_start,
+                '?' => xml.state = .pi_name_start,
                 else => return xml.fail(.invalid_byte),
             },
-            .doctype_name_start => switch (byte) {
+            .pi_name_start => switch (byte) {
                 ' ', '\t', '\r', '\n' => {},
                 '>', '<' => return xml.fail(.invalid_byte),
                 else => {
                     tok_start = xml.index;
-                    xml.state = .doctype_name;
+                    xml.state = .pi_name;
                 },
             },
-            .doctype_name => switch (byte) {
-                ' ', '\t', '\r', '\n' => return xml.emit(.doctype, .{
-                    .tag = .doctype,
+            .pi_name => switch (byte) {
+                ' ', '\t', '\r', '\n' => return xml.emit(.pi_open, .{
+                    .tag = .pi_open,
                     .bytes = xml.bytes[tok_start..xml.index],
                 }),
-                '?' => return xml.emit(.doctype_end, .{
-                    .tag = .doctype,
+                '?' => return xml.emit(.pi_end, .{
+                    .tag = .pi_open,
                     .bytes = xml.bytes[tok_start..xml.index],
                 }),
                 '>', '<' => return xml.fail(.invalid_byte),
                 else => {},
             },
-            .doctype => switch (byte) {
+            .pi_open => switch (byte) {
                 ' ', '\t', '\r', '\n' => {},
-                '?' => xml.state = .doctype_end,
+                '?' => xml.state = .pi_end,
                 '<', '>' => return xml.fail(.invalid_byte),
                 else => {
                     tok_start = xml.index;
-                    xml.state = .doctype_attr_key;
+                    xml.state = .pi_attr_key;
                 },
             },
-            .doctype_attr_key => switch (byte) {
-                '=' => return xml.emit(.doctype_attr_value_q, .{
+            .pi_attr_key => switch (byte) {
+                '=' => return xml.emit(.pi_attr_value_q, .{
                     .tag = .attr_key,
                     .bytes = xml.bytes[tok_start..xml.index],
                 }),
                 '?', '<', '>' => return xml.fail(.invalid_byte),
                 else => {},
             },
-            .doctype_attr_value_q => switch (byte) {
+            .pi_attr_value_q => switch (byte) {
                 '"', '\'' => {
-                    xml.state = .doctype_attr_value;
+                    xml.state = .pi_attr_value;
                     tok_start = xml.index;
                 },
                 else => return xml.fail(.invalid_byte),
             },
-            .doctype_attr_value => switch (byte) {
-                '"', '\'' => return xml.emit(.doctype, .{
+            .pi_attr_value => switch (byte) {
+                '"', '\'' => return xml.emit(.pi_open, .{
                     .tag = .attr_value,
                     .bytes = xml.bytes[tok_start .. xml.index + 1],
                 }),
                 '\n' => return xml.fail(.invalid_byte),
                 else => {},
             },
-            .doctype_end => switch (byte) {
-                '>' => xml.state = .body,
+            .pi_end => switch (byte) {
+                '>' => return xml.emit(.head, .{
+                    .tag = .pi_close,
+                    .bytes = xml.bytes[xml.index..xml.index],
+                }),
                 else => return xml.fail(.invalid_byte),
+            },
+            .head => switch (byte) {
+                ' ', '\t', '\r', '\n' => {},
+                '<' => xml.state = .head_name_start,
+                else => {
+                    xml.state = .head_content;
+                    tok_start = xml.index;
+                },
             },
             .body => switch (byte) {
                 ' ', '\t', '\r', '\n' => {},
@@ -154,9 +171,27 @@ pub fn next(xml: *Xml) Token {
                 }),
                 else => {},
             },
+            .head_content => switch (byte) {
+                '<' => return xml.emit(.head_name_start, .{
+                    .tag = .content,
+                    .bytes = xml.bytes[tok_start..xml.index],
+                }),
+                else => {},
+            },
+            .head_name_start => switch (byte) {
+                ' ', '\t', '\r', '\n' => {},
+                '?' => xml.state = .pi_name_start,
+                '!' => xml.state = .head_data_start,
+                '>', '<' => return xml.fail(.invalid_byte),
+                '/' => xml.state = .tag_close_start,
+                else => {
+                    tok_start = xml.index;
+                    xml.state = .tag_name;
+                },
+            },
             .tag_name_start => switch (byte) {
                 ' ', '\t', '\r', '\n' => {},
-                '!' => xml.state = .comment_start,
+                '!' => xml.state = .data_start,
                 '>', '<' => return xml.fail(.invalid_byte),
                 '/' => xml.state = .tag_close_start,
                 else => {
@@ -244,7 +279,13 @@ pub fn next(xml: *Xml) Token {
                 '\n' => return xml.fail(.invalid_byte),
                 else => {},
             },
-            .comment_start => switch (byte) {
+            .head_data_start => switch (byte) {
+                // TODO: doctype and cdata
+                '-' => xml.state = .comment_body,
+                else => return xml.fail(.invalid_byte),
+            },
+            .data_start => switch (byte) {
+                // TODO: cdata
                 '-' => xml.state = .comment_body,
                 else => return xml.fail(.invalid_byte),
             },
@@ -273,16 +314,19 @@ const testing = std.testing;
 
 const State = enum {
     start,
-    doctype_q,
-    doctype_name,
-    doctype_name_start,
-    doctype,
-    doctype_attr_key,
-    doctype_attr_value_q,
-    doctype_attr_value,
-    doctype_end,
+    pi_q,
+    pi_name,
+    pi_name_start,
+    pi_open,
+    pi_attr_key,
+    pi_attr_value_q,
+    pi_attr_value,
+    pi_end,
+    head,
     body,
     content,
+    head_content,
+    head_name_start,
     tag_name_start,
     tag_name,
     tag,
@@ -293,7 +337,8 @@ const State = enum {
     tag_close_name,
     tag_close_b,
     tag_end_empty,
-    comment_start,
+    data_start,
+    head_data_start,
     comment_body,
     comment_end_maybe,
 };
@@ -327,11 +372,12 @@ test "hello world xml" {
         \\<map></map>
     ;
     var xml: Xml = .{ .bytes = bytes };
-    try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .pi_open, "xml");
     try testExpect(&xml, .attr_key, "version");
     try testExpect(&xml, .attr_value, "\"1.0\"");
     try testExpect(&xml, .attr_key, "encoding");
     try testExpect(&xml, .attr_value, "\"UTF-8\"");
+    try testExpect(&xml, .pi_close, "");
     try testExpect(&xml, .tag_open, "map");
     try testExpect(&xml, .tag_close, "map");
     try testExpect(&xml, .eof, "");
@@ -350,7 +396,8 @@ test "some props" {
         \\</map>
     ;
     var xml: Xml = .{ .bytes = bytes };
-    try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .pi_open, "xml");
+    try testExpect(&xml, .pi_close, "");
     try testExpect(&xml, .tag_open, "map");
     try testExpect(&xml, .tag_open, "properties");
 
@@ -394,7 +441,8 @@ test "comments" {
         \\ <property name="rolled" type="bool" value="true"/>
     ;
     var xml: Xml = .{ .bytes = bytes };
-    try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .pi_open, "xml");
+    try testExpect(&xml, .pi_close, "");
     try testExpect(&xml, .tag_open, "property");
     try testExpect(&xml, .attr_key, "name");
     try testExpect(&xml, .attr_value, "\"rolled\"");
@@ -411,7 +459,8 @@ test "eof mid-comment" {
         \\ <!
     ;
     var xml: Xml = .{ .bytes = bytes };
-    try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .pi_open, "xml");
+    try testExpect(&xml, .pi_close, "");
     try testExpect(&xml, .eof, "");
 }
 
@@ -421,11 +470,66 @@ test "xml header single qoute attributes" {
     ;
 
     var xml: Xml = .{ .bytes = bytes };
-    try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .pi_open, "xml");
     try testExpect(&xml, .attr_key, "version");
     try testExpect(&xml, .attr_value, "'1.0'");
     try testExpect(&xml, .attr_key, "encoding");
     try testExpect(&xml, .attr_value, "'utf-8'");
+    try testExpect(&xml, .pi_close, "");
+    try testExpect(&xml, .eof, "");
+}
+
+test "xml DTD test - inventory" {
+    const bytes =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<?xml-stylesheet type="text/css" href="style.css"?>
+        \\
+        \\<!DOCTYPE Inventory [
+        \\  <!ENTITY Copyright "&#169; 2025">
+        \\
+        \\  <!ELEMENT Inventory (Item+)>
+        \\  <!ELEMENT Item (Name, Description?)>
+        \\  <!ELEMENT Name (#PCDATA)>
+        \\  <!ELEMENT Description (#PCDATA | Part)*> <!ELEMENT Part (#PCDATA)>
+        \\
+        \\  <!ATTLIST Item
+        \\    itemID ID #REQUIRED
+        \\    category (Tools | Gear) "Tools"
+        \\    stock CDATA #IMPLIED
+        \\  >
+        \\]>
+        \\
+        \\<Inventory>
+        \\  <Item itemID="a1" stock="150">
+        \\    <Name>Warp Wrench</Name>
+        \\    <Description>
+        \\      A tool for bending <Part>spacetime</Part>.
+        \\      <![CDATA[
+        \\        Handle with care! <Do NOT drop!>
+        \\      ]]>
+        \\      &Copyright;
+        \\    </Description>
+        \\  </Item>
+        \\  
+        \\  <Item itemID="a2" category="Gear">
+        \\    <Name>Gravity Boots</Name>
+        \\  </Item>
+        \\</Inventory>
+    ;
+    var xml: Xml = .{ .bytes = bytes };
+    try testExpect(&xml, .pi_open, "xml");
+    try testExpect(&xml, .attr_key, "version");
+    try testExpect(&xml, .attr_value, "\"1.0\"");
+    try testExpect(&xml, .attr_key, "encoding");
+    try testExpect(&xml, .attr_value, "\"UTF-8\"");
+    try testExpect(&xml, .pi_close, "");
+
+    try testExpect(&xml, .pi_open, "xml-stylesheet");
+    try testExpect(&xml, .attr_key, "type");
+    try testExpect(&xml, .attr_value, "\"text/css\"");
+    try testExpect(&xml, .attr_key, "href");
+    try testExpect(&xml, .attr_value, "\"style.css\"");
+    try testExpect(&xml, .pi_close, "");
     try testExpect(&xml, .eof, "");
 }
 
