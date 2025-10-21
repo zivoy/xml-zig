@@ -121,14 +121,14 @@ pub fn next(xml: *Xml) Token {
                 else => {},
             },
             .doctype_attr_value_q => switch (byte) {
-                '"' => {
+                '"', '\'' => {
                     xml.state = .doctype_attr_value;
                     tok_start = xml.index;
                 },
                 else => return xml.fail(.invalid_byte),
             },
             .doctype_attr_value => switch (byte) {
-                '"' => return xml.emit(.doctype, .{
+                '"', '\'' => return xml.emit(.doctype, .{
                     .tag = .attr_value,
                     .bytes = xml.bytes[tok_start .. xml.index + 1],
                 }),
@@ -412,6 +412,20 @@ test "eof mid-comment" {
     ;
     var xml: Xml = .{ .bytes = bytes };
     try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .eof, "");
+}
+
+test "xml header single qoute attributes" {
+    const bytes =
+        \\<?xml version='1.0' encoding='utf-8'?>
+    ;
+
+    var xml: Xml = .{ .bytes = bytes };
+    try testExpect(&xml, .doctype, "xml");
+    try testExpect(&xml, .attr_key, "version");
+    try testExpect(&xml, .attr_value, "'1.0'");
+    try testExpect(&xml, .attr_key, "encoding");
+    try testExpect(&xml, .attr_value, "'utf-8'");
     try testExpect(&xml, .eof, "");
 }
 
