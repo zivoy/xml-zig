@@ -10,12 +10,12 @@ pub fn build(b: *std.Build) void {
         .optimize = mode,
     });
 
-    const lib = b.addLibrary(.{
+    const exe = b.addExecutable(.{
         .name = "xml",
         .root_module = mod,
     });
 
-    b.installArtifact(lib);
+    b.installArtifact(exe);
 
     const main_tests = b.addTest(.{
         .root_module = mod,
