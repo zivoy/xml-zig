@@ -429,12 +429,12 @@ pub fn main() !void {
     const input_file = args[1];
     const max_bytes = std.math.maxInt(u32);
     var xml: Xml = .{ .bytes = try std.fs.cwd().readFileAlloc(arena, input_file, max_bytes) };
-    var bw = std.io.bufferedWriter(std.io.getStdOut().writer());
-    const writer = bw.writer();
+    var stdout = std.fs.File.stdout();
+    var writer = stdout.writer(&.{}).interface;
     while (true) {
         const token = xml.next();
         try writer.print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
         if (token.tag == .eof) break;
     }
-    try bw.flush();
+    try writer.flush();
 }
