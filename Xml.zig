@@ -443,12 +443,14 @@ pub fn main() !void {
     const input_file = args[1];
     const max_bytes = std.math.maxInt(u32);
     var xml: Xml = .{ .bytes = try std.fs.cwd().readFileAlloc(arena, input_file, max_bytes) };
-    var stdout = std.fs.File.stdout();
-    var writer = stdout.writer(&.{}).interface;
+    var buffer: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&buffer);
+    var writer = &stdout_writer.interface;
     while (true) {
         const token = xml.next();
         try writer.print("{s}: {s}\n", .{ @tagName(token.tag), token.bytes });
         if (token.tag == .eof) break;
+        if (token.tag == .invalid) break;
     }
     try writer.flush();
 }
